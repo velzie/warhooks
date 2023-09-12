@@ -228,6 +228,46 @@ typedef struct {
   int modelindex;
 } cg_clientInfo_t;
 typedef struct {
+  int x;
+  int y;
+  int width;
+  int height;
+  int scissor_x;
+  int scissor_y;
+  int scissor_width;
+  int scissor_height;
+  int ortho_x;
+  int ortho_y;
+  float fov_x;
+  float fov_y;
+  vec3_t vieworg;
+  float viewaxis[9];
+  float blend[4];
+  unsigned int time;
+  int rdflags;
+  // skyportal_t
+  char skyportal[36];
+  uint8_t *areabits;
+  float weaponAlpha;
+  float minLight;
+  struct shader_s *colorCorrection;
+} refdef_t;
+typedef struct {
+  int type;
+  int POVent;
+  bool thirdperson;
+  bool playerPrediction;
+  bool drawWeapon;
+  bool draw2D;
+  refdef_t refdef;
+  float fracDistFOV;
+  vec3_t origin;
+  vec3_t angles;
+  float axis[9];
+  vec3_t velocity;
+  bool flipped;
+} cg_viewdef_t;
+typedef struct {
   unsigned int time;
   float delay;
   unsigned int realTime;

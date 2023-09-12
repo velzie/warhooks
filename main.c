@@ -79,8 +79,13 @@ void *lc_ptr_CG_GS_Trace = (void *)0x68a65;
 
 void *lc_ptr_CG_LFuncDrawBar = (void *)0x4cad3;
 
+void *lc_ptr_CG_DrawPlayerNames = (void *)0x6f0e3;
+
 trace_t (**p_module_Trace)(trace_t *, vec_t *, vec_t *, vec_t *, vec_t *, int,
                            int, int);
+void (*p_trap_R_TransformVectorToScreen)(refdef_t *rd, vec3_t *in, vec3_t *out);
+
+void (*p_trap_SCR_DrawString)(int, int, int, char *, void *, vec4_t);
 
 centity_t (*p_cg_entities)[1024];
 cg_state_t *p_cg;
@@ -88,6 +93,8 @@ cg_clientInfo_t (*p_cg_clientInfo)[256];
 
 void *old_pm_move;
 void *old_CG_LFuncDrawBar;
+
+void *old_CG_DrawPlayerNames;
 
 void *bss_ptr_key_lines = (void *)0x280720;
 void *bss_ptr_edit_line = (void *)0x282728;
@@ -196,8 +203,10 @@ void PM_Move() {
 
     for (int i = 0; i < 255; i++) {
       // todo print name with cgsClientinfo and do logic idk
-      if (!p_cg_clientInfo[i]->name[0])
-        break;
+      if (!(*p_cg_clientInfo)[i].name[0] ||
+          (p_cg->predictedPlayerState.POVnum > 0 &&
+           p_cg->predictedPlayerState.POVnum == (i + 1)))
+        continue;
 
       centity_t cent = (*p_cg_entities)[i + 1];
 
@@ -208,7 +217,7 @@ void PM_Move() {
           1);
 
       if (canSee.plane.normal[2] == 0) {
-        float dist = 1000;
+        float dist = 40000;
 
         float pitch = playerangs[0] / 57.2958;
         float yaw = playerangs[1] / 57.2958;
@@ -252,6 +261,33 @@ void PM_Move() {
   lc_hook(lc_ptr_PM_Move, PM_Move);
 }
 
+void CG_DrawPlayerNames(void *font, vec4_t color) {
+  cg_viewdef_t *view = (cg_viewdef_t *)((uintptr_t)p_cg + 593528);
+
+  for (int i = 0; i < 255; i++) {
+    if (!(*p_cg_clientInfo)[i].name[0] ||
+        (p_cg->predictedPlayerState.POVnum > 0 &&
+         p_cg->predictedPlayerState.POVnum == (i + 1)))
+      continue;
+
+    centity_t cent = (*p_cg_entities)[i + 1];
+
+    vec3_t screenpos;
+
+    p_trap_R_TransformVectorToScreen(&view->refdef, &cent.current.origin,
+                                     &screenpos);
+
+    p_trap_SCR_DrawString(screenpos[0], screenpos[1], 0,
+                          (*p_cg_clientInfo)[i].name, font, color);
+  }
+
+  lc_unhook(lc_ptr_CG_DrawPlayerNames, old_CG_DrawPlayerNames);
+
+  ((void (*)(void *, vec4_t))((uintptr_t)lc_ptr_CG_DrawPlayerNames +
+                              lc_base_ptr - lc_text_offset))(font, color);
+  lc_hook(lc_ptr_CG_DrawPlayerNames, CG_DrawPlayerNames);
+}
+
 void PM_ApplyMouseAnglesClamp() {}
 void *CG_FireWeaponEvent(int entNum, int weapon, int fireMode) {
   printf("-- %i %i %i--\n", entNum, weapon, fireMode);
@@ -273,7 +309,6 @@ void Con_Key_Enter(char *s) {
   RemoveChars(buf, '/');
   char *token = strtok(buf, " ");
 
-  printf("asdjsdj %s\n", token);
   if (strcmp(token, "p") == 0) {
     // com_printf("\n\n\n---- WARHOOKS ----\n\n\n");
 
@@ -442,15 +477,24 @@ void *SDL_LoadObject(const char *s) {
     noppify(lc_base_ptr + 0x6fbc8 - lc_text_offset, 6);
     noppify(lc_base_ptr + 0x6fca9 - lc_text_offset, 6);
 
+    // nametag hack
+
     p_cg_entities = lc_bss_ptr + 0x4000a0;
     p_cg = lc_bss_ptr + 0x36a0a0;
     p_cg_clientInfo = lc_bss_ptr + 0x359790;
     p_module_Trace = (uintptr_t)lc_bss_ptr + lc_ptr_module_Trace;
 
+    p_trap_R_TransformVectorToScreen = lc_base_ptr + 0x28cff - lc_text_offset;
+
+    p_trap_SCR_DrawString = lc_base_ptr + 0x28d73 - lc_text_offset;
+
     // noppify(lc_base_ptr + 0x30d02 - lc_text_offset, 5);
 
     // lc_hook(lc_ptr_CG_FireWeaponEvent, CG_FireWeaponEvent);
     old_pm_move = lc_hook(lc_ptr_PM_Move, PM_Move);
+
+    old_CG_DrawPlayerNames =
+        lc_hook(lc_ptr_CG_DrawPlayerNames, CG_DrawPlayerNames);
 
     // old_CG_LFuncDrawBar = lc_hook(lc_ptr_CG_LFuncDrawBar, CG_LFuncDrawBar);
   }
