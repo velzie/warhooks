@@ -340,3 +340,13 @@ typedef struct {
   // cg_viewdef_t view;
   // cg_gamechat_t chat;
 } cg_state_t;
+typedef struct cvar_s {
+  char *name;
+  char *string;
+  char *dvalue;
+  char *latched_string; // for CVAR_LATCH vars
+  int flags;
+  int modified; // set each time the cvar is changed
+  float value;
+  int integer;
+} cvar_t;

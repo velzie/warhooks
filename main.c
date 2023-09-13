@@ -9,6 +9,8 @@
 #include <sys/mman.h>
 #define MAX_PATH 1024
 
+#define WH_VERSION "1.0.0"
+
 #include "qtypes.h"
 
 jmp_buf b;
@@ -63,9 +65,13 @@ void *ptr_Con_SendChatMessage = (void *)0x85622;
 void *ptr_CbufAddText = (void *)0x27163;
 
 void *ptr_Cvar_Get = (void *)0x2c879;
+void *ptr_CL_RequestNextDownload = (void *)0x715ec;
+
+void *ptr_sv_pure = (void *)0x36a174;
 
 void *old_Cvar_Get;
 void *old_Con_Key_Enter;
+void *old_CL_RequestNextDownload;
 
 void *lc_ptr_PM_Move = (void *)0xe67b;
 void *lc_ptr_PM_Friction = (void *)0xd8f3;
@@ -106,17 +112,6 @@ void *bss_ptr;
 void *lc_bss_ptr;
 
 void (*com_printf)(char *, ...);
-
-typedef struct cvar_s {
-  char *name;
-  char *string;
-  char *dvalue;
-  char *latched_string; // for CVAR_LATCH vars
-  int flags;
-  int modified; // set each time the cvar is changed
-  float value;
-  int integer;
-} cvar_t;
 
 // mov r10, addr
 // jmp r10
@@ -190,6 +185,7 @@ trace_t rt;
 int attacking = 0;
 
 int wh_triggerbot = 0;
+int wh_nametags = 0;
 
 void PM_Move() {
   lc_unhook(lc_ptr_PM_Move, old_pm_move);
@@ -232,27 +228,28 @@ void PM_Move() {
 
         trace_t lookingAt;
 
+        unsigned long len = 0x10000 | 0x2000000;
+
         ((void (*)(trace_t *, vec3_t, vec3_t, vec3_t, vec3_t, int, int))(
             (uintptr_t)lc_ptr_CG_GS_Trace + lc_base_ptr - lc_text_offset))(
             &lookingAt, playerpos, vec3_origin, vec3_origin, end,
-            p_cg->predictedPlayerState.POVnum, 0x10000 | 0x2000000);
-
-        if (lookingAt.plane.normal[2] != 0) {
-          if (!attacking) {
-            ((void (*)(char *))((uintptr_t)base_ptr + ptr_CbufAddText -
-                                text_offset))("+attack\n");
-            attacking = 1;
-          }
+            p_cg->predictedPlayerState.POVnum, len);
+        if (lookingAt.plane.normal[2] == 0)
+          goto notattacking;
+        if (!attacking) {
+          ((void (*)(char *))((uintptr_t)base_ptr + ptr_CbufAddText -
+                              text_offset))("+attack\n");
+          attacking = 1;
         } else {
-        notattacking:
-          if (attacking) {
-            ((void (*)(char *))((uintptr_t)base_ptr + ptr_CbufAddText -
-                                text_offset))("-attack\n");
-            attacking = 0;
-          }
+          goto notattacking;
         }
       } else {
-        goto notattacking;
+      notattacking:
+        if (attacking) {
+          ((void (*)(char *))((uintptr_t)base_ptr + ptr_CbufAddText -
+                              text_offset))("-attack\n");
+          attacking = 0;
+        }
       }
     }
   }
@@ -264,21 +261,53 @@ void PM_Move() {
 void CG_DrawPlayerNames(void *font, vec4_t color) {
   cg_viewdef_t *view = (cg_viewdef_t *)((uintptr_t)p_cg + 593528);
 
-  for (int i = 0; i < 255; i++) {
-    if (!(*p_cg_clientInfo)[i].name[0] ||
-        (p_cg->predictedPlayerState.POVnum > 0 &&
-         p_cg->predictedPlayerState.POVnum == (i + 1)))
-      continue;
+  int y = 25;
+  int x = 25;
 
-    centity_t cent = (*p_cg_entities)[i + 1];
+  char *buf;
+  asprintf(&buf, "^4War^6Hooks^1 %s", WH_VERSION);
+  p_trap_SCR_DrawString(x, y, 0, buf, font, color);
+  if (wh_triggerbot) {
+    y += 25;
+    p_trap_SCR_DrawString(x, y, 0, "triggerbot ON", font, color);
+  }
+  if (wh_nametags) {
+    y += 25;
+    p_trap_SCR_DrawString(x, y, 0, "nametags ON", font, color);
+  }
 
-    vec3_t screenpos;
+  if (wh_nametags) {
+    for (int i = 0; i < 255; i++) {
+      if (!(*p_cg_clientInfo)[i].name[0] ||
+          (p_cg->predictedPlayerState.POVnum > 0 &&
+           p_cg->predictedPlayerState.POVnum == (i + 1)))
+        continue;
 
-    p_trap_R_TransformVectorToScreen(&view->refdef, &cent.current.origin,
-                                     &screenpos);
+      centity_t cent = (*p_cg_entities)[i + 1];
 
-    p_trap_SCR_DrawString(screenpos[0], screenpos[1], 0,
-                          (*p_cg_clientInfo)[i].name, font, color);
+      __auto_type playerpos = p_cg->predictedPlayerState.pmove.origin;
+
+      trace_t canSee;
+      ((void (*)(trace_t *, vec3_t, vec3_t, vec3_t, vec3_t, int, int))(
+          (uintptr_t)lc_ptr_CG_GS_Trace + lc_base_ptr - lc_text_offset))(
+          &canSee, playerpos, vec3_origin, vec3_origin, cent.current.origin, 1,
+          1);
+
+      if (canSee.plane.normal[2] == 0)
+        continue;
+
+      vec3_t screenpos;
+      vec3_t otherpos;
+
+      otherpos[0] = cent.current.origin[0];
+      otherpos[1] = cent.current.origin[1];
+      otherpos[2] = cent.current.origin[2] + 50;
+
+      p_trap_R_TransformVectorToScreen(&view->refdef, &otherpos, &screenpos);
+
+      p_trap_SCR_DrawString(screenpos[0], screenpos[1], 0,
+                            (*p_cg_clientInfo)[i].name, font, color);
+    }
   }
 
   lc_unhook(lc_ptr_CG_DrawPlayerNames, old_CG_DrawPlayerNames);
@@ -288,10 +317,16 @@ void CG_DrawPlayerNames(void *font, vec4_t color) {
   lc_hook(lc_ptr_CG_DrawPlayerNames, CG_DrawPlayerNames);
 }
 
-void PM_ApplyMouseAnglesClamp() {}
-void *CG_FireWeaponEvent(int entNum, int weapon, int fireMode) {
-  printf("-- %i %i %i--\n", entNum, weapon, fireMode);
+void CL_RequestNextDownload() {
+  unhook(ptr_CL_RequestNextDownload, old_CL_RequestNextDownload);
+
+  // bypass pure check
+  *(short *)((uintptr_t)bss_ptr + ptr_sv_pure) = 0;
+  ((void (*)())((uintptr_t)base_ptr + ptr_CL_RequestNextDownload -
+                text_offset))();
+  hook(ptr_CL_RequestNextDownload, CL_RequestNextDownload);
 }
+
 void Con_Key_Enter(char *s) {
 
   void *key_lines = ((uintptr_t)bss_ptr + bss_ptr_key_lines);
@@ -309,36 +344,37 @@ void Con_Key_Enter(char *s) {
   RemoveChars(buf, '/');
   char *token = strtok(buf, " ");
 
-  if (strcmp(token, "p") == 0) {
-    // com_printf("\n\n\n---- WARHOOKS ----\n\n\n");
+  if (strcmp(token, "wh_info") == 0) {
+    com_printf("\n\n\n---- WARHOOKS ----\nVERSION %s\n\n", WH_VERSION);
+  } else if (strcmp(token, "wh_getpos") == 0) {
 
     __auto_type playerangs = p_cg->predictedPlayerState.viewangles;
 
     __auto_type playerpos = p_cg->predictedPlayerState.pmove.origin;
-    // __auto_type ang = (*p_cg_entities)[1].current.angles;
-    com_printf("x: %f z: %f y: %f\n", playerpos[0], playerpos[1], playerpos[2]);
+    com_printf("POS x: %f z: %f y: %f\n", playerpos[0], playerpos[1],
+               playerpos[2]);
 
-    // ((void (*)(char *))((uintptr_t)base_ptr + ptr_Con_SendChatMessage -
-    //                     text_offset))("/+attack 1");
-    //
-    //
-    //
-    //
-    // todo:  use module_trace and see if that detects wall between 2 players
-
-    // rt = ((trace_t(*)(trace_t *, vec3_t, vec3_t, float, float, int, int,
-    // int))(
-    //     (uintptr_t)lc_base_ptr + lc_ptr_GS_TraceBullet - lc_text_offset))(
-    //     &trace, playerpos, ang, 0, 0, 20, 0, 0);
-
-    // todo: use this to draw nametags (shows when visible player)
-
-    com_printf("x: %f z: %f y: %f\n", playerangs[0], playerangs[1],
+    com_printf("ANG x: %f z: %f y: %f\n", playerangs[0], playerangs[1],
                playerangs[2]);
 
-  } else if (strcmp(token, "triggerbot") == 0) {
-    com_printf("triggerbot enabled\n");
-    wh_triggerbot = 1;
+  } else if (strcmp(token, "wh_triggerbot") == 0) {
+    token = strtok(NULL, " ");
+    if (strcmp(token, "1") == 0) {
+      com_printf("triggerbot enabled\n");
+      wh_triggerbot = 1;
+    } else {
+      com_printf("triggerbot disabled\n");
+      wh_triggerbot = 0;
+    }
+  } else if (strcmp(token, "wh_nametags") == 0) {
+    token = strtok(NULL, " ");
+    if (strcmp(token, "1") == 0) {
+      com_printf("nametags enabled\n");
+      wh_nametags = 1;
+    } else {
+      com_printf("nametags disabled\n");
+      wh_nametags = 0;
+    }
   } else {
   defaults:
     unhook(ptr_Con_Key_Enter, old_Con_Key_Enter);
@@ -387,13 +423,8 @@ void *Cvar_Get(char *name, char *value, int flags) {
   return cvar;
 }
 
-/* Trampoline for the real main() */
+int (*main_orig)(int, char **, char **);
 
-// todo: hook ui library and whatnot, maybe a bit of imgui
-// todo: bypass pure checks
-static int (*main_orig)(int, char **, char **);
-
-/* Our fake main() that gets called by __libc_start_main() */
 int main_hook(int argc, char **argv, char **envp) {
   for (int i = 0; i < argc; ++i) {
     printf("argv[%d] = %s\n", i, argv[i]);
@@ -417,11 +448,12 @@ int main_hook(int argc, char **argv, char **envp) {
   hook(ptr_FS_RemoveFile, FS_RemoveFile);
   hook(ptr_FS_RemoveAbsoluteFile, FS_RemoveAbsoluteFile);
 
+  old_CL_RequestNextDownload =
+      hook(ptr_CL_RequestNextDownload, CL_RequestNextDownload);
+
   com_printf = (base_ptr + 0x2a95e - text_offset);
 
   old_Cvar_Get = hook(ptr_Cvar_Get, Cvar_Get);
-  // char *purecheck = base_ptr + 0x716f4 - text_offset;
-  // purecheck[0] = '\x84';
 
   printf("--- Before main ---\n");
   int ret = main_orig(argc, argv, envp);
@@ -477,8 +509,6 @@ void *SDL_LoadObject(const char *s) {
     noppify(lc_base_ptr + 0x6fbc8 - lc_text_offset, 6);
     noppify(lc_base_ptr + 0x6fca9 - lc_text_offset, 6);
 
-    // nametag hack
-
     p_cg_entities = lc_bss_ptr + 0x4000a0;
     p_cg = lc_bss_ptr + 0x36a0a0;
     p_cg_clientInfo = lc_bss_ptr + 0x359790;
@@ -488,15 +518,11 @@ void *SDL_LoadObject(const char *s) {
 
     p_trap_SCR_DrawString = lc_base_ptr + 0x28d73 - lc_text_offset;
 
-    // noppify(lc_base_ptr + 0x30d02 - lc_text_offset, 5);
-
     // lc_hook(lc_ptr_CG_FireWeaponEvent, CG_FireWeaponEvent);
     old_pm_move = lc_hook(lc_ptr_PM_Move, PM_Move);
 
     old_CG_DrawPlayerNames =
         lc_hook(lc_ptr_CG_DrawPlayerNames, CG_DrawPlayerNames);
-
-    // old_CG_LFuncDrawBar = lc_hook(lc_ptr_CG_LFuncDrawBar, CG_LFuncDrawBar);
   }
 
   return obj_ptr;
