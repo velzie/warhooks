@@ -16,6 +16,9 @@ void *ptr_CL_RequestNextDownload = (void *)0x715ec;
 
 void *ptr_sv_pure = (void *)0x36a174;
 
+void *bss_ptr_key_lines = (void *)0x280720;
+void *bss_ptr_edit_line = (void *)0x282728;
+
 // --- libcgame offsets ---
 
 void *lc_ptr_PM_Move = (void *)0xe67b;

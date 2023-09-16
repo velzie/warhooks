@@ -1,3 +1,5 @@
+#ifndef QTYPES_H
+#define QTYPES_H
 #include <stdbool.h>
 #include <stdint.h>
 typedef float vec_t;
@@ -350,3 +352,4 @@ typedef struct cvar_s {
   float value;
   int integer;
 } cvar_t;
+#endif

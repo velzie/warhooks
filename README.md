@@ -10,12 +10,11 @@ I made this because I wanted to learn about game hacking and function detouring,
 - triggerbot
 - aimbot
 
-# How to compile
-`gcc main.c -g -o hax.so -fPIC -shared`
-
 # How to use
+- clone source
+- run `make`
 - compile warfork with steamlib disabled and debugging symbols enabled, commit# `bbf81122b2337eb1509144e5aee5e4ba8bd57fd3`
-- launch game with LD_PRELOAD pointed to the compiled dll
+- launch game with LD_PRELOAD pointed to warhooks.so
 
 ### Commands
 ```

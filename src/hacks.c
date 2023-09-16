@@ -1,100 +1,14 @@
-
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <math.h>
+#include <stddef.h>
 #include <string.h>
-#include <sys/mman.h>
 
-#define WH_VERSION "1.0.0"
-
-#include "offsets.c"
+#include "hook.h"
+#include "offsets.h"
+#include "pointers.h"
 #include "qtypes.h"
-#include "util.c"
+#include "warhooks.h"
 
-void *old_Cvar_Get;
-void *old_Con_Key_Enter;
-void *old_CL_RequestNextDownload;
-
-trace_t (**p_module_Trace)(trace_t *, vec_t *, vec_t *, vec_t *, vec_t *, int,
-                           int, int);
-void (*p_trap_R_TransformVectorToScreen)(refdef_t *rd, vec3_t *in, vec3_t *out);
-
-void (*p_trap_SCR_DrawString)(int, int, int, char *, void *, vec4_t);
-
-centity_t (*p_cg_entities)[1024];
-cg_state_t *p_cg;
-cg_clientInfo_t (*p_cg_clientInfo)[256];
-vec3_t *cl_viewangles;
-
-void *old_pm_move;
-void *old_CG_LFuncDrawBar;
-
-void *old_CG_DrawPlayerNames;
-
-void *bss_ptr_key_lines = (void *)0x280720;
-void *bss_ptr_edit_line = (void *)0x282728;
-
-void *next_write_addr;
-void *base_ptr;
-void *lc_base_ptr;
-void *bss_ptr;
-void *lc_bss_ptr;
-
-void (*com_printf)(char *, ...);
-
-// mov r10, addr
-// jmp r10
-uint8_t jmpasm[] = {0x49, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x00, 0x41, 0xFF, 0xE2};
-
-void *_create_hook(void *tgt_addr, void *src_addr) {
-
-  // write assembly for jmp long
-  memcpy(&jmpasm[2], &src_addr, sizeof(src_addr));
-  next_write_addr = tgt_addr;
-
-  // copy original fn header
-  void *func_header = malloc(sizeof(jmpasm));
-  memcpy(func_header, tgt_addr, sizeof(jmpasm));
-
-  // write assembly
-  memcpy(tgt_addr, jmpasm, sizeof(jmpasm));
-
-  return func_header;
-}
-void _unhook(void *tgt_addr, void *header) {
-  memcpy(tgt_addr, header, sizeof(jmpasm));
-}
-
-void *hook(void *tgt_addr, void *src_addr) {
-  return _create_hook((void *)((uintptr_t)tgt_addr + base_ptr - text_offset),
-                      src_addr);
-}
-void unhook(void *tgt_addr, void *header) {
-  _unhook((uintptr_t)tgt_addr + base_ptr - text_offset, header);
-}
-
-void *lc_hook(void *tgt_addr, void *src_addr) {
-  return _create_hook(
-      (void *)((uintptr_t)tgt_addr + lc_base_ptr - lc_text_offset), src_addr);
-}
-void lc_unhook(void *tgt_addr, void *header) {
-  _unhook((uintptr_t)tgt_addr + lc_base_ptr - lc_text_offset, header);
-}
-
-void *noppify(void *tgt_addr, int len) {
-  void *store = malloc(len);
-  memcpy(store, tgt_addr, len);
-
-  char *arr = tgt_addr;
-  for (int i = 0; i < len; i++) {
-    arr[i] = '\x90';
-  }
-
-  return store;
-}
+#include "util.h"
 
 vec3_t vec3_origin = {0, 0, 0};
 trace_t trace;
@@ -318,8 +232,8 @@ void CL_RequestNextDownload() {
 
 void Con_Key_Enter(char *s) {
 
-  void *key_lines = ((uintptr_t)bss_ptr + bss_ptr_key_lines);
-  int *edit_line = ((uintptr_t)bss_ptr + bss_ptr_edit_line);
+  void *key_lines = (bss_ptr + 0x280720);
+  int *edit_line = (bss_ptr + 0x282728);
   char *orig_buf = (*(char(*)[32][256])key_lines)[*edit_line];
 
   if (strlen(orig_buf) <= 1)
@@ -391,106 +305,4 @@ void *Cvar_Get(char *name, char *value, int flags) {
 
   hook(ptr_Cvar_Get, Cvar_Get);
   return cvar;
-}
-
-int (*main_orig)(int, char **, char **);
-
-int main_hook(int argc, char **argv, char **envp) {
-  for (int i = 0; i < argc; ++i) {
-    printf("argv[%d] = %s\n", i, argv[i]);
-  }
-  int pid = getpid();
-
-  // get ptr to the executable section
-  base_ptr = (void *)findBaseAddress(pid, "warfork", "r-xp");
-  // get pointer to the heap
-  bss_ptr = (void *)findBaseAddress(pid, "00:00", "rw-p");
-
-  if (mprotect(base_ptr, 565248, PROT_EXEC | PROT_WRITE | PROT_READ) == -1) {
-    perror("mprotect");
-    exit(1);
-  }
-
-  printf("--- hooking ---\n");
-  old_Con_Key_Enter = hook(ptr_Con_Key_Enter, Con_Key_Enter);
-  old_CL_RequestNextDownload =
-      hook(ptr_CL_RequestNextDownload, CL_RequestNextDownload);
-
-  com_printf = (base_ptr + 0x2a95e - text_offset);
-  cl_viewangles = bss_ptr + 0x36a3e0; // cl+480
-
-  old_Cvar_Get = hook(ptr_Cvar_Get, Cvar_Get);
-
-  printf("--- calling main ---\n");
-  int ret = main_orig(argc, argv, envp);
-  printf("--- main exited ----\n");
-  printf("main() returned %d\n", ret);
-  return ret;
-}
-
-// entry point for all dynamic exes
-// redirect main() to main_hook()
-int __libc_start_main(int (*main)(int, char **, char **), int argc, char **argv,
-                      int (*init)(int, char **, char **), void (*fini)(void),
-                      void (*rtld_fini)(void), void *stack_end) {
-  /* Save the real main function address */
-  main_orig = main;
-
-  /* Find the real __libc_start_main()... */
-  typeof(&__libc_start_main) orig = dlsym(RTLD_NEXT, "__libc_start_main");
-
-  /* ... and call it with our custom main function */
-  return orig(main_hook, argc, argv, init, fini, rtld_fini, stack_end);
-}
-
-void *SDL_LoadFunction(void *handle, const char *s) {
-
-  typeof(&SDL_LoadFunction) orig = dlsym(RTLD_NEXT, "SDL_LoadFunction");
-
-  return orig(handle, s);
-}
-
-// hijack SDL_LoadObject, since it will try to load libcgame.so from the
-// pure.pk3 the pure check isn't the problem, it's just that the dll it loads
-// won't have symbols and we want symbols so it will redirect to the built
-// libcgame instead
-void *SDL_LoadObject(const char *sofile) {
-  typeof(&SDL_LoadObject) dlopen = dlsym(RTLD_NEXT, "SDL_LoadObject");
-
-  void *obj_ptr;
-  if (strstr(sofile, "libcgame") != 0) {
-    obj_ptr = dlopen("./basewf/libcgame_x86_64.so");
-    printf("--- libcgame loaded! hooking! ---\n");
-    com_printf("WARHOOKS: HOOKING LIBCGAME\n\n\n");
-
-    lc_base_ptr = (void *)findBaseAddress(getpid(), "libcgame", "r-xp");
-    if (mprotect(lc_base_ptr, 479232, PROT_EXEC | PROT_WRITE | PROT_READ) ==
-        -1) {
-      perror("mprotect");
-      exit(1);
-    }
-
-    lc_bss_ptr = (void *)findBaseAddress(getpid(), "libcgame", "rw-p");
-    // noppify(lc_base_ptr + 0x6fbd8 - lc_text_offset, 5);
-    // noppify(lc_base_ptr + 0x6fba3 - lc_text_offset, 6);
-    // noppify(lc_base_ptr + 0x6fbc8 - lc_text_offset, 6);
-    // noppify(lc_base_ptr + 0x6fca9 - lc_text_offset, 6);
-    //
-    p_cg_entities = lc_bss_ptr + 0x4000a0;
-    p_cg = lc_bss_ptr + 0x36a0a0;
-    p_cg_clientInfo = lc_bss_ptr + 0x359790;
-
-    p_trap_R_TransformVectorToScreen = lc_base_ptr + 0x28cff - lc_text_offset;
-    p_trap_SCR_DrawString = lc_base_ptr + 0x28d73 - lc_text_offset;
-
-    // lc_hook(lc_ptr_CG_FireWeaponEvent, CG_FireWeaponEvent);
-    old_pm_move = lc_hook(lc_ptr_PM_Move, PM_Move);
-
-    old_CG_DrawPlayerNames =
-        lc_hook(lc_ptr_CG_DrawPlayerNames, CG_DrawPlayerNames);
-  } else {
-    obj_ptr = dlopen(sofile);
-  }
-
-  return obj_ptr;
 }
