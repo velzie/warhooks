@@ -1,91 +1,21 @@
 
 #define _GNU_SOURCE
 #include <dlfcn.h>
-#include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#define MAX_PATH 1024
 
 #define WH_VERSION "1.0.0"
 
+#include "offsets.c"
 #include "qtypes.h"
-
-jmp_buf b;
-
-// Function to find the base address of a module in a process
-uintptr_t findBaseAddress(int pid, const char *moduleName,
-                          const char *pagetype) {
-  uintptr_t baseAddress = 0;
-  char mapsFilePath[MAX_PATH];
-
-  // Create the path to the maps file for the process
-  snprintf(mapsFilePath, sizeof(mapsFilePath), "/proc/%d/maps", pid);
-
-  // Open the maps file
-  FILE *mapsFile = fopen(mapsFilePath, "r");
-  if (!mapsFile) {
-    perror("Error opening maps file");
-    return 0;
-  }
-
-  // Iterate through the lines in the maps file
-  char line[MAX_PATH];
-  while (fgets(line, sizeof(line), mapsFile)) {
-    // find the executable page
-    if (strstr(line, pagetype)) {
-      // Check if the line contains the module name
-      if (strstr(line, moduleName)) {
-        // Parse the start address
-        sscanf(line, "%lx", &baseAddress);
-        break;
-      }
-    }
-  }
-
-  // Close the maps file
-  fclose(mapsFile);
-
-  return baseAddress;
-}
-
-// void *text_offset = (void *)0xe000;
-
-unsigned long text_offset = 0x7000;
-unsigned long lc_text_offset = 0xa000;
-
-void *ptr_Con_Key_Enter = (void *)0x85748;
-void *ptr_Sys_Library_GetGameLibPath = (void *)0x8d653;
-void *ptr_FS_ExtractFile = (void *)0x34ba1;
-void *ptr_FS_RemoveFile = (void *)0x34ba1;
-void *ptr_FS_RemoveAbsoluteFile = (void *)0x3488f;
-void *ptr_Con_SendChatMessage = (void *)0x85622;
-void *ptr_CbufAddText = (void *)0x27163;
-
-void *ptr_Cvar_Get = (void *)0x2c879;
-void *ptr_CL_RequestNextDownload = (void *)0x715ec;
-
-void *ptr_sv_pure = (void *)0x36a174;
+#include "util.c"
 
 void *old_Cvar_Get;
 void *old_Con_Key_Enter;
 void *old_CL_RequestNextDownload;
-
-void *lc_ptr_PM_Move = (void *)0xe67b;
-void *lc_ptr_PM_Friction = (void *)0xd8f3;
-void *lc_ptr_CG_FireWeaponEvent = (void *)0x411ed;
-void *lc_ptr_GS_TraceBullet = (void *)0x149c5;
-void *lc_ptr_PM_ApplyMouseAnglesClamp = (void *)0x123a9;
-
-void *lc_ptr_module_Trace = (void *)0x5feb58;
-void *lc_ptr_cg_entities = (void *)0x149c5;
-void *lc_ptr_CG_GS_Trace = (void *)0x68a65;
-
-void *lc_ptr_CG_LFuncDrawBar = (void *)0x4cad3;
-
-void *lc_ptr_CG_DrawPlayerNames = (void *)0x6f0e3;
 
 trace_t (**p_module_Trace)(trace_t *, vec_t *, vec_t *, vec_t *, vec_t *, int,
                            int, int);
@@ -96,6 +26,7 @@ void (*p_trap_SCR_DrawString)(int, int, int, char *, void *, vec4_t);
 centity_t (*p_cg_entities)[1024];
 cg_state_t *p_cg;
 cg_clientInfo_t (*p_cg_clientInfo)[256];
+vec3_t *cl_viewangles;
 
 void *old_pm_move;
 void *old_CG_LFuncDrawBar;
@@ -164,19 +95,6 @@ void *noppify(void *tgt_addr, int len) {
 
   return store;
 }
-void RemoveChars(char *s, char c) {
-  int writer = 0, reader = 0;
-
-  while (s[reader]) {
-    if (s[reader] != c) {
-      s[writer++] = s[reader];
-    }
-
-    reader++;
-  }
-
-  s[writer] = 0;
-}
 
 vec3_t vec3_origin = {0, 0, 0};
 trace_t trace;
@@ -186,11 +104,12 @@ int attacking = 0;
 
 int wh_triggerbot = 0;
 int wh_nametags = 0;
+int wh_aimbot = 0;
 
 void PM_Move() {
   lc_unhook(lc_ptr_PM_Move, old_pm_move);
 
-  // todo: use  CG_DrawHUDRect for better ESP, print nametags too
+  __auto_type playerangs = p_cg->predictedPlayerState.viewangles;
   if (wh_triggerbot) {
     __auto_type playerpos = p_cg->predictedPlayerState.pmove.origin;
     __auto_type playerangs = p_cg->predictedPlayerState.viewangles;
@@ -205,6 +124,10 @@ void PM_Move() {
         continue;
 
       centity_t cent = (*p_cg_entities)[i + 1];
+      // don't target teammates or the dead
+      if (cent.current.damage == 0 ||
+          cent.current.team == p_cg->predictedPlayerState.stats[8])
+        continue;
 
       trace_t canSee;
       ((void (*)(trace_t *, vec3_t, vec3_t, vec3_t, vec3_t, int, int))(
@@ -213,6 +136,7 @@ void PM_Move() {
           1);
 
       if (canSee.plane.normal[2] == 0) {
+
         float dist = 40000;
 
         float pitch = playerangs[0] / 57.2958;
@@ -254,6 +178,67 @@ void PM_Move() {
     }
   }
 
+  if (wh_aimbot) {
+    __auto_type playerpos = p_cg->predictedPlayerState.pmove.origin;
+
+    int chosen = -1;
+    float dx, dz, dy, dist;
+    float lastdist = 999999;
+    centity_t cent;
+    for (int i = 0; i < 255; i++) {
+      if (!(*p_cg_clientInfo)[i].name[0] ||
+          (p_cg->predictedPlayerState.POVnum > 0 &&
+           p_cg->predictedPlayerState.POVnum == (i + 1)))
+        continue;
+
+      cent = (*p_cg_entities)[i + 1];
+
+      // don't target teammates or the dead
+      if (cent.current.damage == 0 ||
+          cent.current.team == p_cg->predictedPlayerState.stats[8])
+        continue;
+
+      trace_t canSee;
+      ((void (*)(trace_t *, vec3_t, vec3_t, vec3_t, vec3_t, int, int))(
+          (uintptr_t)lc_ptr_CG_GS_Trace + lc_base_ptr - lc_text_offset))(
+          &canSee, playerpos, vec3_origin, vec3_origin, cent.current.origin, 1,
+          1);
+
+      if (canSee.plane.normal[2] != 0)
+        continue;
+
+      dx = playerpos[0] - cent.current.origin[0];
+      dz = playerpos[1] - cent.current.origin[1];
+      dy = playerpos[2] - (cent.current.origin[2] - 50);
+
+      dist = sqrt(pow(dx, 2) + pow(dy, 2) + pow(dz, 2));
+
+      if (dist > 1000)
+        continue;
+      if (dist > lastdist)
+        continue;
+      lastdist = dist;
+      chosen = i;
+    }
+
+    if (chosen != -1 && dist > 200) {
+      float ryaw = atan2(dz, dx);
+      float rpitch = atan2(sqrt(dz * dz + dx * dx), dy);
+
+      float yoffset = playerangs[0] - (*cl_viewangles)[0];
+      float tpitch = rpitch * -57.2958 + 90 - 5 - yoffset;
+
+      float xoffset = playerangs[1] - (*cl_viewangles)[1];
+      float tyaw = ryaw * 57.2958 - 180 - xoffset;
+
+      float dpitch = (*cl_viewangles)[0] - tpitch;
+      float dyaw = (*cl_viewangles)[1] - tyaw;
+
+      (*cl_viewangles)[0] -= dpitch / 5;
+      (*cl_viewangles)[1] -= dyaw;
+    }
+  }
+
   ((void (*)())((uintptr_t)lc_ptr_PM_Move + lc_base_ptr - lc_text_offset))();
   lc_hook(lc_ptr_PM_Move, PM_Move);
 }
@@ -270,6 +255,10 @@ void CG_DrawPlayerNames(void *font, vec4_t color) {
   if (wh_triggerbot) {
     y += 25;
     p_trap_SCR_DrawString(x, y, 0, "triggerbot ON", font, color);
+  }
+  if (wh_aimbot) {
+    y += 25;
+    p_trap_SCR_DrawString(x, y, 0, "aimbot ON", font, color);
   }
   if (wh_nametags) {
     y += 25;
@@ -366,6 +355,15 @@ void Con_Key_Enter(char *s) {
       com_printf("triggerbot disabled\n");
       wh_triggerbot = 0;
     }
+  } else if (strcmp(token, "wh_aimbot") == 0) {
+    token = strtok(NULL, " ");
+    if (strcmp(token, "1") == 0) {
+      com_printf("aimbot enabled\n");
+      wh_aimbot = 1;
+    } else {
+      com_printf("aimbot disabled\n");
+      wh_aimbot = 0;
+    }
   } else if (strcmp(token, "wh_nametags") == 0) {
     token = strtok(NULL, " ");
     if (strcmp(token, "1") == 0) {
@@ -382,43 +380,15 @@ void Con_Key_Enter(char *s) {
     hook(ptr_Con_Key_Enter, Con_Key_Enter);
     return;
   }
-
-  // while (token != NULL) {
-  //   token = strtok(NULL, " ");
-  // }
 }
 
-// troll the engine by forcing our own path
-const char *Sys_Library_GetGameLibPath(const char *name, int64_t time,
-                                       int randomizer) {
-
-  printf("redirecting %s\n", name);
-  return "/home/ce/pacman/warfork-qfusion/source/build/basewf/"
-         "libcgame_x86_64.so";
-}
-
-int FS_ExtractFile(const char *src, const char *dst) {
-  printf("file extract moment %s/%s\n", src, dst);
-  return 1;
-}
-int FS_RemoveFile(const char *file) {
-  printf("removing file %s\n", file);
-  return 1;
-}
-int FS_RemoveAbsoluteFile(const char *file) {
-  printf("removing abs file %s\n", file);
-  return 1;
-}
-
+// scaffolding for modifying cvars
 void *Cvar_Get(char *name, char *value, int flags) {
   unhook(ptr_Cvar_Get, old_Cvar_Get);
-  // printf("cvar %s\n", name);
 
   typeof(&Cvar_Get) orig = (uintptr_t)base_ptr + ptr_Cvar_Get - text_offset;
   void *cvar = orig(name, value, flags);
 
-  // cvar_t *addr = (bcc_ptr + 0x335720);
-  // printf("value %f\n", addr->value);
   hook(ptr_Cvar_Get, Cvar_Get);
   return cvar;
 }
@@ -443,29 +413,23 @@ int main_hook(int argc, char **argv, char **envp) {
 
   printf("--- hooking ---\n");
   old_Con_Key_Enter = hook(ptr_Con_Key_Enter, Con_Key_Enter);
-  hook(ptr_Sys_Library_GetGameLibPath, Sys_Library_GetGameLibPath);
-  hook(ptr_FS_ExtractFile, FS_ExtractFile);
-  hook(ptr_FS_RemoveFile, FS_RemoveFile);
-  hook(ptr_FS_RemoveAbsoluteFile, FS_RemoveAbsoluteFile);
-
   old_CL_RequestNextDownload =
       hook(ptr_CL_RequestNextDownload, CL_RequestNextDownload);
 
   com_printf = (base_ptr + 0x2a95e - text_offset);
+  cl_viewangles = bss_ptr + 0x36a3e0; // cl+480
 
   old_Cvar_Get = hook(ptr_Cvar_Get, Cvar_Get);
 
-  printf("--- Before main ---\n");
+  printf("--- calling main ---\n");
   int ret = main_orig(argc, argv, envp);
-  printf("--- After main ----\n");
+  printf("--- main exited ----\n");
   printf("main() returned %d\n", ret);
   return ret;
 }
 
-/*
- * Wrapper for __libc_start_main() that replaces the real main
- * function with our hooked version.
- */
+// entry point for all dynamic exes
+// redirect main() to main_hook()
 int __libc_start_main(int (*main)(int, char **, char **), int argc, char **argv,
                       int (*init)(int, char **, char **), void (*fini)(void),
                       void (*rtld_fini)(void), void *stack_end) {
@@ -479,8 +443,6 @@ int __libc_start_main(int (*main)(int, char **, char **), int argc, char **argv,
   return orig(main_hook, argc, argv, init, fini, rtld_fini, stack_end);
 }
 
-int sv_cheats = 1;
-
 void *SDL_LoadFunction(void *handle, const char *s) {
 
   typeof(&SDL_LoadFunction) orig = dlsym(RTLD_NEXT, "SDL_LoadFunction");
@@ -488,12 +450,17 @@ void *SDL_LoadFunction(void *handle, const char *s) {
   return orig(handle, s);
 }
 
-void *SDL_LoadObject(const char *s) {
-  typeof(&SDL_LoadObject) orig = dlsym(RTLD_NEXT, "SDL_LoadObject");
-  void *obj_ptr = orig(s);
+// hijack SDL_LoadObject, since it will try to load libcgame.so from the
+// pure.pk3 the pure check isn't the problem, it's just that the dll it loads
+// won't have symbols and we want symbols so it will redirect to the built
+// libcgame instead
+void *SDL_LoadObject(const char *sofile) {
+  typeof(&SDL_LoadObject) dlopen = dlsym(RTLD_NEXT, "SDL_LoadObject");
 
-  if (strstr(s, "libcgame") != 0) {
-    printf("libcgame loaded! hooking!\n");
+  void *obj_ptr;
+  if (strstr(sofile, "libcgame") != 0) {
+    obj_ptr = dlopen("./basewf/libcgame_x86_64.so");
+    printf("--- libcgame loaded! hooking! ---\n");
     com_printf("WARHOOKS: HOOKING LIBCGAME\n\n\n");
 
     lc_base_ptr = (void *)findBaseAddress(getpid(), "libcgame", "r-xp");
@@ -504,18 +471,16 @@ void *SDL_LoadObject(const char *s) {
     }
 
     lc_bss_ptr = (void *)findBaseAddress(getpid(), "libcgame", "rw-p");
-    noppify(lc_base_ptr + 0x6fbd8 - lc_text_offset, 5);
-    noppify(lc_base_ptr + 0x6fba3 - lc_text_offset, 6);
-    noppify(lc_base_ptr + 0x6fbc8 - lc_text_offset, 6);
-    noppify(lc_base_ptr + 0x6fca9 - lc_text_offset, 6);
-
+    // noppify(lc_base_ptr + 0x6fbd8 - lc_text_offset, 5);
+    // noppify(lc_base_ptr + 0x6fba3 - lc_text_offset, 6);
+    // noppify(lc_base_ptr + 0x6fbc8 - lc_text_offset, 6);
+    // noppify(lc_base_ptr + 0x6fca9 - lc_text_offset, 6);
+    //
     p_cg_entities = lc_bss_ptr + 0x4000a0;
     p_cg = lc_bss_ptr + 0x36a0a0;
     p_cg_clientInfo = lc_bss_ptr + 0x359790;
-    p_module_Trace = (uintptr_t)lc_bss_ptr + lc_ptr_module_Trace;
 
     p_trap_R_TransformVectorToScreen = lc_base_ptr + 0x28cff - lc_text_offset;
-
     p_trap_SCR_DrawString = lc_base_ptr + 0x28d73 - lc_text_offset;
 
     // lc_hook(lc_ptr_CG_FireWeaponEvent, CG_FireWeaponEvent);
@@ -523,6 +488,8 @@ void *SDL_LoadObject(const char *s) {
 
     old_CG_DrawPlayerNames =
         lc_hook(lc_ptr_CG_DrawPlayerNames, CG_DrawPlayerNames);
+  } else {
+    obj_ptr = dlopen(sofile);
   }
 
   return obj_ptr;
