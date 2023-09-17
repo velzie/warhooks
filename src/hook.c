@@ -28,27 +28,26 @@ void _unhook(void *tgt_addr, void *header) {
   memcpy(tgt_addr, header, sizeof(jmpasm));
 }
 
-void *hook(void *tgt_addr, void *src_addr) {
-  return _create_hook((void *)((uintptr_t)tgt_addr + base_ptr - text_offset),
+void *hook(uintptr_t tgt_addr, void *src_addr) {
+  return _create_hook((void *)(tgt_addr + base_ptr - text_offset), src_addr);
+}
+void unhook(uintptr_t tgt_addr, void *header) {
+  _unhook(tgt_addr + base_ptr - text_offset, header);
+}
+
+void *lc_hook(uintptr_t tgt_addr, void *src_addr) {
+  return _create_hook((void *)(tgt_addr + lc_base_ptr - lc_text_offset),
                       src_addr);
 }
-void unhook(void *tgt_addr, void *header) {
-  _unhook((uintptr_t)tgt_addr + base_ptr - text_offset, header);
+void lc_unhook(uintptr_t tgt_addr, void *header) {
+  _unhook(tgt_addr + lc_base_ptr - lc_text_offset, header);
 }
 
-void *lc_hook(void *tgt_addr, void *src_addr) {
-  return _create_hook(
-      (void *)((uintptr_t)tgt_addr + lc_base_ptr - lc_text_offset), src_addr);
-}
-void lc_unhook(void *tgt_addr, void *header) {
-  _unhook((uintptr_t)tgt_addr + lc_base_ptr - lc_text_offset, header);
-}
-
-void *noppify(void *tgt_addr, int len) {
+void *noppify(uintptr_t tgt_addr, int len) {
   void *store = malloc(len);
-  memcpy(store, tgt_addr, len);
+  memcpy(store, (void *)tgt_addr, len);
 
-  char *arr = tgt_addr;
+  char *arr = (void *)tgt_addr;
   for (int i = 0; i < len; i++) {
     arr[i] = '\x90';
   }

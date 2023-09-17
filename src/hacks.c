@@ -1,5 +1,7 @@
 #include <math.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "hook.h"
@@ -20,9 +22,27 @@ int wh_triggerbot = 0;
 int wh_nametags = 0;
 int wh_aimbot = 0;
 
+int isFFA() {
+  int lastteam = -1;
+  for (int i = 0; i < 255; i++) {
+    if (!(*p_cg_clientInfo)[i].name[0] ||
+        (p_cg->predictedPlayerState.POVnum > 0 &&
+         p_cg->predictedPlayerState.POVnum == (i + 1)))
+      continue;
+
+    centity_t cent = (*p_cg_entities)[i + 1];
+    int team = p_cg->predictedPlayerState.stats[8];
+    if ((cent.current.team != team || lastteam != team) && lastteam != -1)
+      return false;
+    lastteam = team;
+  }
+  return true;
+}
+
 void PM_Move() {
   lc_unhook(lc_ptr_PM_Move, old_pm_move);
 
+  int isffa = isFFA();
   __auto_type playerangs = p_cg->predictedPlayerState.viewangles;
   if (wh_triggerbot) {
     __auto_type playerpos = p_cg->predictedPlayerState.pmove.origin;
@@ -40,7 +60,7 @@ void PM_Move() {
       centity_t cent = (*p_cg_entities)[i + 1];
       // don't target teammates or the dead
       if (cent.current.damage == 0 ||
-          cent.current.team == p_cg->predictedPlayerState.stats[8])
+          (cent.current.team == p_cg->predictedPlayerState.stats[8] && !isffa))
         continue;
 
       trace_t canSee;
@@ -109,7 +129,7 @@ void PM_Move() {
 
       // don't target teammates or the dead
       if (cent.current.damage == 0 ||
-          cent.current.team == p_cg->predictedPlayerState.stats[8])
+          (cent.current.team == p_cg->predictedPlayerState.stats[8] && !isffa))
         continue;
 
       trace_t canSee;
@@ -300,7 +320,7 @@ void Con_Key_Enter(char *s) {
 void *Cvar_Get(char *name, char *value, int flags) {
   unhook(ptr_Cvar_Get, old_Cvar_Get);
 
-  typeof(&Cvar_Get) orig = (uintptr_t)base_ptr + ptr_Cvar_Get - text_offset;
+  typeof(&Cvar_Get) orig = base_ptr + ptr_Cvar_Get - text_offset;
   void *cvar = orig(name, value, flags);
 
   hook(ptr_Cvar_Get, Cvar_Get);

@@ -6,11 +6,11 @@ SDIR=src
 
 LIBS=-lm
 
-_OBJ = hacks.o pointers.o entry.o hook.o offsets.o util.o
+_OBJ = hacks.o pointers.o entry.o hook.o util.o
 OBJ = $(patsubst %,$(ODIR)/%,$(_OBJ))
 
 
-$(ODIR)/%.o: $(SDIR)/%.c
+$(ODIR)/%.o: $(SDIR)/%.c 
 	$(CC) -c -o $@ $< $(CFLAGS)
 
 warhooks.so: $(OBJ)

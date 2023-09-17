@@ -91,7 +91,7 @@ void *SDL_LoadObject(const char *sofile) {
 
     lc_bss_ptr = (void *)findBaseAddress(getpid(), "libcgame", "rw-p");
 
-    p_cg_entities = lc_bss_ptr + 0x4000a0;
+    p_cg_entities = lc_bss_ptr + lc_heap_ptr_cg_entities;
     p_cg = lc_bss_ptr + 0x36a0a0;
     p_cg_clientInfo = lc_bss_ptr + 0x359790;
 
